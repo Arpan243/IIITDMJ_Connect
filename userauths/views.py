@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.shortcuts import render, redirect
 from django.contrib import messages
-from django.contrib.auth import authenticate, login
+from django.contrib.auth import authenticate, login, get_user_model
 from django.http import HttpResponse, HttpResponseRedirect
 from django.contrib.auth import logout
 from django.contrib.auth.decorators import login_required
@@ -9,6 +9,51 @@ from django.contrib.auth.decorators import login_required
 from userauths.models import User, Profile
 from userauths.forms import UserRegisterForm, ProfileUpdateForm, UserUpdateForm
 from core.models import FriendRequest, Post
+
+from django.template.loader import render_to_string
+from django.contrib.sites.shortcuts import get_current_site
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.core.mail import EmailMessage
+from django.db.models.query_utils import Q
+from .tokens import account_activation_token
+
+
+
+def activate(request, uidb64, token):
+    User = get_user_model()
+    try:
+        uid = force_str(urlsafe_base64_decode(uidb64))
+        user = User.objects.get(pk=uid)
+    except:
+        user = None
+
+    if user is not None and account_activation_token.check_token(user, token):
+        user.is_active = True
+        user.save()
+
+        messages.success(request, "Thank you for your email confirmation. Now you can login your account.")
+        return redirect('userauths:sign-in')
+    else:
+        messages.error(request, "Activation link is invalid!")
+
+    return redirect('feed')
+
+def activateEmail(request, user, to_email):
+    mail_subject = "Activate your user account."
+    message = render_to_string("userauths/template_activate_account.html", {
+        'user': user.username,
+        'domain': get_current_site(request).domain,
+        'uid': urlsafe_base64_encode(force_bytes(user.pk)),
+        'token': account_activation_token.make_token(user),
+        "protocol": 'https' if request.is_secure() else 'http'
+    })
+    email = EmailMessage(mail_subject, message, to=[to_email])
+    if email.send():
+        messages.success(request, f'Dear <b>{user}</b>, please go to you email <b>{to_email}</b> inbox and click on \
+                received activation link to confirm and complete the registration. <b>Note:</b> Check your spam folder.')
+    else:
+        messages.error(request, f'Problem sending email to {to_email}, check if you typed it correctly.')
 
 
 def RegisterView(request, *args, **kwargs):
@@ -18,21 +63,25 @@ def RegisterView(request, *args, **kwargs):
 
     form = UserRegisterForm(request.POST or None)
     if form.is_valid():
-        form.save()
+        user=form.save(commit=False)
+        user.is_active=False
         full_name = form.cleaned_data.get('full_name')
         phone = form.cleaned_data.get('phone')
         email = form.cleaned_data.get('email')
         password = form.cleaned_data.get('password1')
 
-        user = authenticate(email=email, password=password)
-        login(request, user)
+        # user = authenticate(email=email, password=password)
+        print(user.is_active)
+        user.save()
+        activateEmail(request, user, form.cleaned_data.get('email'))
+        # login(request, user)
 
-        messages.success(request, f"Hi {request.user.username}, your account have been created successfully.")
+        # messages.success(request, f"Hi {request.user.username}, your account have been created successfully.")
 
-        profile = Profile.objects.get(user=request.user)
-        profile.full_name = full_name
-        profile.phone = phone
-        profile.save()
+        # profile = Profile.objects.get(user=request.user)
+        # profile.full_name = full_name
+        # profile.phone = phone
+        # profile.save()
 
         return redirect('core:feed')
     
